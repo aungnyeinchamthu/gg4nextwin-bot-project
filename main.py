@@ -223,7 +223,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler, pattern="^(deposit)$"))
     app.add_handler(CallbackQueryHandler(bank_selection, pattern="^bank_"))
     app.add_handler(CallbackQueryHandler(admin_handler, pattern="^(take|approve|reject)_"))
-    app.add_handler(CallbackQueryHandler(rejection_reason_handler, pattern="^reject_(id|amount|slip)_"))
+    app.add_handler(CallbackQueryHandler(rejection_reason_handler, pattern=r"^reject_(id|amount|slip)_\d+$"))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, slip_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.run_polling()
