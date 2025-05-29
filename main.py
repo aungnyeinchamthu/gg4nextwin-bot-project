@@ -1,20 +1,21 @@
 import os
-import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
-)
+import aiosqlite
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils import executor
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN_HERE"
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID") or -1001234567890)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
 
-def init_db():
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-    c.execute("""
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
+
+async def init_db():
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("""
         CREATE TABLE IF NOT EXISTS requests (
-            request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             username TEXT,
             xbet_id TEXT,
@@ -22,203 +23,92 @@ def init_db():
             bank TEXT,
             slip_file TEXT,
             status TEXT DEFAULT 'pending',
-            taken_by_admin INTEGER DEFAULT NULL,
-            rejection_pending_field TEXT DEFAULT NULL
+            resubmitted INTEGER DEFAULT 0
         )
-    """)
-    conn.commit()
-    conn.close()
+        """)
+        await db.commit()
 
-banks = [
-    {"name": "KBZ Bank", "account": "123-456-789"},
-    {"name": "AYA Bank", "account": "987-654-321"},
-    {"name": "CB Bank", "account": "555-666-777"},
-]
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💰 Please enter your 1xBet ID (9–13 digits):")
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username or f"user_{user_id}"
-    text = update.message.text.strip()
-
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-
-    # Check for existing pending request or rejection
-    c.execute("SELECT request_id, xbet_id, amount, bank, rejection_pending_field FROM requests WHERE user_id=? AND status='pending'", (user_id,))
-    row = c.fetchone()
-
-    if not row:
-        # New request
-        if text.isdigit() and 9 <= len(text) <= 13:
-            c.execute("INSERT INTO requests (user_id, username, xbet_id) VALUES (?, ?, ?)", (user_id, username, text))
-            conn.commit()
-            await update.message.reply_text("✅ Enter the amount you want to deposit:")
-        else:
-            await update.message.reply_text("❌ Please enter a valid 9–13 digit 1xBet ID.")
-    else:
-        request_id, xbet_id, amount, bank, pending_field = row
-
-        if pending_field:
-            # Resubmission after rejection
-            if pending_field == 'xbet_id' and text.isdigit() and 9 <= len(text) <= 13:
-                c.execute("UPDATE requests SET xbet_id=?, rejection_pending_field=NULL WHERE request_id=?", (text, request_id))
-                conn.commit()
-                await resend_to_admin(context, c, request_id)
-                await update.message.reply_text("✅ Updated ID. Resubmitted to admin.")
-            elif pending_field == 'amount' and text.isdigit() and int(text) >= 1000:
-                c.execute("UPDATE requests SET amount=?, rejection_pending_field=NULL WHERE request_id=?", (int(text), request_id))
-                conn.commit()
-                await resend_to_admin(context, c, request_id)
-                await update.message.reply_text("✅ Updated amount. Resubmitted to admin.")
-            else:
-                await update.message.reply_text("❌ Invalid correction. Please try again.")
-        elif not amount:
-            if text.isdigit() and int(text) >= 1000:
-                c.execute("UPDATE requests SET amount=? WHERE request_id=?", (int(text), request_id))
-                conn.commit()
-                bank_buttons = [[InlineKeyboardButton(bank['name'], callback_data=f"bank_{i}_{request_id}")] for i, bank in enumerate(banks)]
-                await update.message.reply_text("🏦 Select a bank:", reply_markup=InlineKeyboardMarkup(bank_buttons))
-            else:
-                await update.message.reply_text("❌ Please enter a valid amount (minimum 1000 MMK).")
-
-    conn.close()
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-
-    if query.data.startswith('bank_'):
-        _, bank_index, request_id = query.data.split("_")
-        bank = banks[int(bank_index)]
-        c.execute("UPDATE requests SET bank=? WHERE request_id=?", (bank['name'], request_id))
-        conn.commit()
-        await query.message.reply_text(f"✅ Bank selected: {bank['name']} (Account: {bank['account']}). Please send your slip.")
-    elif query.data.startswith(('take_', 'approve_', 'reject_')):
-        action, request_id = query.data.split("_", 1)
-        c.execute("SELECT user_id, taken_by_admin FROM requests WHERE request_id=?", (request_id,))
-        row = c.fetchone()
-        if not row:
-            await query.answer("❌ Request not found.", show_alert=True)
-            conn.close()
-            return
-        user_id, taken_by = row
-        admin_id = query.from_user.id
-        admin_username = query.from_user.username or f"admin_{admin_id}"
-
-        if action == 'take':
-            if taken_by:
-                await query.answer("❌ Already taken.", show_alert=True)
-            else:
-                c.execute("UPDATE requests SET taken_by_admin=? WHERE request_id=?", (admin_id, request_id))
-                conn.commit()
-                await query.answer("✅ Taken.")
-                await context.bot.send_message(ADMIN_GROUP_ID, f"🛡️ @{admin_username} has taken request {request_id}.")
-        elif taken_by != admin_id:
-            await query.answer("❌ Only the assigned admin can perform this action.", show_alert=True)
-        elif action == 'approve':
-            c.execute("UPDATE requests SET status='approved' WHERE request_id=?", (request_id,))
-            conn.commit()
-            await context.bot.send_message(user_id, "✅ Your deposit has been approved! 🎉")
-            await query.answer("✅ Approved.")
-        elif action == 'reject':
-            reject_buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Wrong ID", callback_data=f"reject_id_{request_id}")],
-                [InlineKeyboardButton("Wrong Amount", callback_data=f"reject_amount_{request_id}")],
-                [InlineKeyboardButton("Wrong Slip", callback_data=f"reject_slip_{request_id}")]
-            ])
-            await query.message.reply_text(f"❌ Select rejection reason for request {request_id}:", reply_markup=reject_buttons)
-            await query.answer("❌ Rejection reason.")
-
-    elif query.data.startswith(('reject_id_', 'reject_amount_', 'reject_slip_')):
-        reason, request_id = query.data.split("_", 1)
-        c.execute("SELECT user_id FROM requests WHERE request_id=?", (request_id,))
-        row = c.fetchone()
-        if not row:
-            await query.answer("❌ Request not found.", show_alert=True)
-            conn.close()
-            return
-        user_id = row[0]
-        if reason == 'reject_id':
-            c.execute("UPDATE requests SET rejection_pending_field='xbet_id' WHERE request_id=?", (request_id,))
-            await context.bot.send_message(user_id, "❌ Your ID was wrong. Please provide the correct 1xBet ID:")
-        elif reason == 'reject_amount':
-            c.execute("UPDATE requests SET rejection_pending_field='amount' WHERE request_id=?", (request_id,))
-            await context.bot.send_message(user_id, "❌ Your amount was wrong. Please provide the correct amount:")
-        elif reason == 'reject_slip':
-            c.execute("UPDATE requests SET rejection_pending_field='slip_file' WHERE request_id=?", (request_id,))
-            await context.bot.send_message(user_id, "❌ Your slip was wrong. Please resend the slip.")
-        conn.commit()
-        await query.answer("❌ Rejection reason sent.")
-
-    conn.close()
-
-async def slip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-    c.execute("SELECT request_id, rejection_pending_field FROM requests WHERE user_id=? AND status='pending'", (user_id,))
-    row = c.fetchone()
-    if not row:
-        await update.message.reply_text("❌ No pending request found.")
-        conn.close()
-        return
-
-    request_id, pending_field = row
-    file_id = update.message.photo[-1].file_id if update.message.photo else update.message.document.file_id
-
-    if pending_field == 'slip_file':
-        c.execute("UPDATE requests SET slip_file=?, rejection_pending_field=NULL WHERE request_id=?", (file_id, request_id))
-        conn.commit()
-        await resend_to_admin(context, c, request_id)
-        await update.message.reply_text("✅ Slip updated. Resubmitted to admin.")
-    else:
-        c.execute("UPDATE requests SET slip_file=? WHERE request_id=?", (file_id, request_id))
-        conn.commit()
-        caption = f"🧾 Request {request_id} ready for admin."
-        sent = await context.bot.send_photo(ADMIN_GROUP_ID, file_id, caption=caption)
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔒 Take", callback_data=f"take_{request_id}")],
-            [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{request_id}")],
-            [InlineKeyboardButton("❌ Reject", callback_data=f"reject_{request_id}")]
-        ])
-        await context.bot.edit_message_reply_markup(ADMIN_GROUP_ID, sent.message_id, reply_markup=buttons)
-        await update.message.reply_text("✅ Slip sent to admin.")
-
-    conn.close()
-
-async def resend_to_admin(context, c, request_id):
-    c.execute("SELECT user_id, username, xbet_id, amount, bank, slip_file FROM requests WHERE request_id=?", (request_id,))
-    row = c.fetchone()
-    if not row:
-        return
-    user_id, username, xbet_id, amount, bank, slip_file = row
-    caption = (
-        f"🆕 Resubmitted Request {request_id}\n"
-        f"👤 User: @{username}\n"
-        f"🆔 1xBet ID: {xbet_id}\n"
-        f"💰 Amount: {amount}\n"
-        f"🏦 Bank: {bank}"
+@dp.message_handler(commands=['start'])
+async def start_handler(message: types.Message):
+    keyboard = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("💰 Deposit", callback_data='deposit')
     )
-    sent = await context.bot.send_photo(ADMIN_GROUP_ID, slip_file, caption=caption)
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔒 Take", callback_data=f"take_{request_id}")],
-        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{request_id}")],
-        [InlineKeyboardButton("❌ Reject", callback_data=f"reject_{request_id}")]
-    ])
-    await context.bot.edit_message_reply_markup(ADMIN_GROUP_ID, sent.message_id, reply_markup=buttons)
+    await message.reply("👋 Welcome! Please choose an option:", reply_markup=keyboard)
 
-def main():
-    init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, slip_handler))
-    app.run_polling()
+@dp.callback_query_handler(lambda c: c.data == 'deposit')
+async def deposit_start(query: types.CallbackQuery):
+    await query.message.answer("Please enter your 1xBet ID (9–13 digits):")
+    await dp.current_state(user=query.from_user.id).set_state("awaiting_xbet_id")
+
+@dp.message_handler(state="awaiting_xbet_id")
+async def handle_xbet_id(message: types.Message, state):
+    xbet_id = message.text.strip()
+    if not (xbet_id.isdigit() and 9 <= len(xbet_id) <= 13):
+        await message.reply("❌ Invalid ID format. Please enter a 9–13 digit number:")
+        return
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("INSERT INTO requests (user_id, username, xbet_id) VALUES (?, ?, ?)",
+                         (message.from_user.id, message.from_user.username or f"user_{message.from_user.id}", xbet_id))
+        await db.commit()
+    await message.reply("✅ Please enter the amount you want to deposit (min 1000 MMK):")
+    await dp.current_state(user=message.from_user.id).set_state("awaiting_amount")
+
+@dp.message_handler(state="awaiting_amount")
+async def handle_amount(message: types.Message, state):
+    amount = message.text.strip()
+    if not (amount.isdigit() and int(amount) >= 1000):
+        await message.reply("❌ Invalid amount. Please enter a number ≥ 1000:")
+        return
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("UPDATE requests SET amount=? WHERE user_id=? AND status='pending'",
+                         (int(amount), message.from_user.id))
+        await db.commit()
+    keyboard = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("KBZ Bank", callback_data='bank_KBZ'),
+        InlineKeyboardButton("AYA Bank", callback_data='bank_AYA'),
+        InlineKeyboardButton("CB Bank", callback_data='bank_CB')
+    )
+    await message.reply("🏦 Please choose a bank:", reply_markup=keyboard)
+    await dp.current_state(user=message.from_user.id).set_state("awaiting_bank")
+
+@dp.callback_query_handler(lambda c: c.data.startswith('bank_'), state="awaiting_bank")
+async def handle_bank_selection(query: types.CallbackQuery, state):
+    bank_name = query.data.split("_")[1]
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("UPDATE requests SET bank=? WHERE user_id=? AND status='pending'",
+                         (bank_name, query.from_user.id))
+        await db.commit()
+    await query.message.answer("📎 Please send your deposit slip (photo or document).")
+    await dp.current_state(user=query.from_user.id).set_state("awaiting_slip")
+
+@dp.message_handler(content_types=types.ContentType.ANY, state="awaiting_slip")
+async def handle_slip(message: types.Message, state):
+    if not (message.photo or message.document):
+        await message.reply("❌ Please send a valid photo or document of your slip.")
+        return
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("UPDATE requests SET slip_file=? WHERE user_id=? AND status='pending'",
+                         (file_id, message.from_user.id))
+        await db.commit()
+        cur = await db.execute("SELECT id, xbet_id, amount, bank FROM requests WHERE user_id=? AND status='pending'",
+                               (message.from_user.id,))
+        req = await cur.fetchone()
+    caption = (f"🧾 Request #{req[0]}\n👤 User: @{message.from_user.username}\n🆔 1xBet ID: {req[1]}\n"
+               f"💰 Amount: {req[2]}\n🏦 Bank: {req[3]}")
+    buttons = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("🔒 Take", callback_data=f"take_{req[0]}"),
+        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{req[0]}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{req[0]}")
+    )
+    await bot.send_photo(ADMIN_GROUP_ID, file_id, caption=caption, reply_markup=buttons)
+    await message.reply("✅ Your slip has been sent for admin review.")
+    await dp.current_state(user=message.from_user.id).finish()
+
+async def on_startup(dp):
+    await init_db()
+    print("🤖 Bot started...")
 
 if __name__ == "__main__":
-    main()
+    from aiogram import executor
+    executor.start_polling(dp, on_startup=on_startup)
