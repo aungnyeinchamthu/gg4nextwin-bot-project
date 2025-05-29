@@ -17,6 +17,11 @@ banks = [
     {"name": "CB Bank", "account_name": "GG4NextWin Co.", "account_number": "555-666-777"},
 ]
 
+# Global trackers
+taken_requests = {}   # user_id → admin_id
+admin_active = {}     # admin_id → user_id
+pending_replies = {}  # admin_id → user_id
+
 # Database setup
 def init_db():
     conn = sqlite3.connect("bot.db")
@@ -36,8 +41,7 @@ def init_db():
             telegram_id INTEGER,
             amount INTEGER,
             bank TEXT,
-            status TEXT,
-            slip TEXT
+            status TEXT
         )
     """)
     conn.commit()
@@ -159,7 +163,8 @@ async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     action, target_id = query.data.split("_")
     target_id = int(target_id)
-    admin_username = query.from_user.username or f"admin_{query.from_user.id}"
+    admin_id = query.from_user.id
+    admin_username = query.from_user.username or f"admin_{admin_id}"
 
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
@@ -171,7 +176,25 @@ async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     amount = row[0]
 
-    if action == "approve":
+    if action == "take":
+        if admin_id in admin_active:
+            await query.answer("❌ You already have an active request.", show_alert=True)
+            conn.close()
+            return
+        if target_id in taken_requests:
+            await query.answer("❌ Another admin has already taken this.", show_alert=True)
+            conn.close()
+            return
+        taken_requests[target_id] = admin_id
+        admin_active[admin_id] = target_id
+        await context.bot.send_message(ADMIN_GROUP_ID, f"🛡️ @{admin_username} has taken the request for user ID {target_id}.")
+        await query.answer("🔒 You took this request.", show_alert=True)
+
+    elif action == "approve":
+        if taken_requests.get(target_id) != admin_id:
+            await query.answer("❌ You didn't take this request.", show_alert=True)
+            conn.close()
+            return
         cashback = int(amount * CASHBACK_PERCENT)
         points = amount // 1000 + cashback
 
@@ -189,28 +212,43 @@ async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(target_id,
                                        f"✅ Deposit approved!\n⭐ Points earned: {points}\n🎉 Total points updated!")
         await query.message.edit_caption(query.message.caption + f"\n✅ Approved by @{admin_username}.")
+
+        # Clear locks
+        taken_requests.pop(target_id, None)
+        admin_active.pop(admin_id, None)
+
     elif action == "reject":
+        if taken_requests.get(target_id) != admin_id:
+            await query.answer("❌ You didn't take this request.", show_alert=True)
+            conn.close()
+            return
         c.execute("UPDATE transactions SET status='rejected' WHERE telegram_id=?", (target_id,))
         conn.commit()
         await context.bot.send_message(target_id, "❌ Your deposit was rejected. Please contact support.")
         await query.message.edit_caption(query.message.caption + f"\n❌ Rejected by @{admin_username}.")
-    elif action == "take":
-        await context.bot.send_message(ADMIN_GROUP_ID, f"🛡️ @{admin_username} has taken the request for user ID {target_id}.")
-        await query.answer("🔒 You took this request.", show_alert=True)
+
+        # Clear locks
+        taken_requests.pop(target_id, None)
+        admin_active.pop(admin_id, None)
+
     elif action == "reply":
+        if taken_requests.get(target_id) != admin_id:
+            await query.answer("❌ You didn't take this request.", show_alert=True)
+            conn.close()
+            return
+        pending_replies[admin_id] = target_id
         await context.bot.send_message(ADMIN_GROUP_ID, f"✏ @{admin_username}, please type your reply for user {target_id}.")
-        context.user_data['awaiting_reply'] = target_id
     conn.close()
     await query.answer()
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_id = update.effective_user.id
-    if 'awaiting_reply' in context.user_data:
-        target_id = context.user_data.pop('awaiting_reply')
+    if admin_id in pending_replies:
+        target_id = pending_replies.pop(admin_id)
         await context.bot.send_message(target_id, f"✏ Admin message: {update.message.text}")
-        await update.message.reply_text("✅ Reply sent to user.")
+        await update.message.reply_text(f"✅ Reply sent to user {target_id}.")
     else:
-        await update.message.reply_text("❌ No pending reply target.")
+        await update.message.reply_text("❌ No pending reply target. Click ✏ Reply first.")
 
 def main():
     init_db()
