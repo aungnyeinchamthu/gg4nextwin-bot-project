@@ -11,7 +11,11 @@ ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
 CASHBACK_PERCENT = 0.05
 REFERRAL_PERCENT = 0.0025
 
-banks = ["KBZ Bank", "AYA Bank", "CB Bank"]
+banks = [
+    {"name": "KBZ Bank", "account_name": "GG4NextWin Co.", "account_number": "123-456-789"},
+    {"name": "AYA Bank", "account_name": "GG4NextWin Co.", "account_number": "987-654-321"},
+    {"name": "CB Bank", "account_name": "GG4NextWin Co.", "account_number": "555-666-777"},
+]
 
 # Database setup
 def init_db():
@@ -93,7 +97,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amount = int(text)
             context.user_data['amount'] = amount
 
-            buttons = [[InlineKeyboardButton(bank, callback_data=f"bank_{i}")] for i, bank in enumerate(banks)]
+            buttons = [[InlineKeyboardButton(bank['name'], callback_data=f"bank_{i}")] for i, bank in enumerate(banks)]
             await update.message.reply_text("🏦 Select a bank:",
                                             reply_markup=InlineKeyboardMarkup(buttons))
         else:
@@ -104,9 +108,15 @@ async def bank_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     bank_index = int(query.data.split("_")[1])
     selected_bank = banks[bank_index]
+    context.user_data['bank'] = selected_bank['name']
 
-    context.user_data['bank'] = selected_bank
-    await query.message.reply_text("📎 Please send your payment slip (photo or document).")
+    bank_info = (
+        f"✅ You selected {selected_bank['name']}.\n"
+        f"Account Name: {selected_bank['account_name']}\n"
+        f"Account Number: {selected_bank['account_number']}\n\n"
+        f"📎 Please send your payment slip (photo or document)."
+    )
+    await query.message.reply_text(bank_info)
     await query.answer()
 
 async def slip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -134,7 +144,8 @@ async def slip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔒 Take", callback_data=f"take_{user_id}"),
          InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user_id}"),
-         InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user_id}")]
+         InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user_id}"),
+         InlineKeyboardButton("✏ Reply", callback_data=f"reply_{user_id}")]
     ])
     await context.bot.edit_message_reply_markup(ADMIN_GROUP_ID, sent.message_id, reply_markup=buttons)
 
@@ -148,6 +159,7 @@ async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     action, target_id = query.data.split("_")
     target_id = int(target_id)
+    admin_username = query.from_user.username or f"admin_{query.from_user.id}"
 
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
@@ -167,7 +179,6 @@ async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("UPDATE transactions SET status='approved' WHERE telegram_id=?", (target_id,))
         conn.commit()
 
-        # Referral commission
         c.execute("SELECT referral_id FROM users WHERE telegram_id=?", (target_id,))
         ref_row = c.fetchone()
         if ref_row and ref_row[0]:
@@ -177,16 +188,29 @@ async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(target_id,
                                        f"✅ Deposit approved!\n⭐ Points earned: {points}\n🎉 Total points updated!")
-        await query.message.edit_caption(query.message.caption + f"\n✅ Approved by admin.")
+        await query.message.edit_caption(query.message.caption + f"\n✅ Approved by @{admin_username}.")
     elif action == "reject":
         c.execute("UPDATE transactions SET status='rejected' WHERE telegram_id=?", (target_id,))
         conn.commit()
         await context.bot.send_message(target_id, "❌ Your deposit was rejected. Please contact support.")
-        await query.message.edit_caption(query.message.caption + f"\n❌ Rejected by admin.")
+        await query.message.edit_caption(query.message.caption + f"\n❌ Rejected by @{admin_username}.")
     elif action == "take":
+        await context.bot.send_message(ADMIN_GROUP_ID, f"🛡️ @{admin_username} has taken the request for user ID {target_id}.")
         await query.answer("🔒 You took this request.", show_alert=True)
+    elif action == "reply":
+        await context.bot.send_message(ADMIN_GROUP_ID, f"✏ @{admin_username}, please type your reply for user {target_id}.")
+        context.user_data['awaiting_reply'] = target_id
     conn.close()
     await query.answer()
+
+async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = update.effective_user.id
+    if 'awaiting_reply' in context.user_data:
+        target_id = context.user_data.pop('awaiting_reply')
+        await context.bot.send_message(target_id, f"✏ Admin message: {update.message.text}")
+        await update.message.reply_text("✅ Reply sent to user.")
+    else:
+        await update.message.reply_text("❌ No pending reply target.")
 
 def main():
     init_db()
@@ -194,9 +218,10 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler, pattern="^(deposit|points|referral)$"))
     app.add_handler(CallbackQueryHandler(bank_selection, pattern="^bank_"))
-    app.add_handler(CallbackQueryHandler(admin_handler, pattern="^(take|approve|reject)_"))
+    app.add_handler(CallbackQueryHandler(admin_handler, pattern="^(take|approve|reject|reply)_"))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, slip_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.GROUPS, reply_handler))
     app.run_polling()
 
 if __name__ == "__main__":
