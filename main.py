@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN_HERE"
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID")) or -1001234567890  # example group ID
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID") or -1001234567890)
 
 def init_db():
     conn = sqlite3.connect("bot.db")
@@ -41,6 +41,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
     user_id = query.from_user.id
     username = query.from_user.username or f"user_{user_id}"
 
@@ -56,7 +57,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Please enter your 1xBet ID (9–13 digits):")
 
     elif query.data.startswith('bank_'):
-        parts = query.data.split("_")
+        parts = query.data.split("_", 2)
         bank_index = int(parts[1])
         request_id = parts[2]
         selected_bank = banks[bank_index]
@@ -65,8 +66,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         await query.message.reply_text(
             f"✅ You selected {selected_bank['name']} (Account: {selected_bank['account']}).\n"
-            f"Please send your deposit slip as an image or document."
-        )
+            f"Please send your deposit slip as an image or document.")
 
     elif query.data.startswith(('take_', 'approve_', 'reject_')):
         action, req_id = query.data.split("_", 1)
@@ -81,29 +81,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if action == "take":
             await context.bot.send_message(ADMIN_GROUP_ID, f"🛡️ @{admin_username} has taken request {req_id}.")
-            await query.answer("Taken.")
-
         elif action == "approve":
             c.execute("UPDATE requests SET status='approved' WHERE request_id=?", (req_id,))
             conn.commit()
             await context.bot.send_message(target_user, "✅ Your deposit has been approved! 🎉")
-            await query.answer("Approved.")
-
         elif action == "reject":
             reject_buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Wrong ID", callback_data=f"reject_id_{req_id}")],
-                [InlineKeyboardButton("Wrong Amount", callback_data=f"reject_amount_{req_id}")],
-                [InlineKeyboardButton("Wrong Slip", callback_data=f"reject_slip_{req_id}")]
+                [InlineKeyboardButton("Wrong ID", callback_data=f"rejectreason_id_{req_id}")],
+                [InlineKeyboardButton("Wrong Amount", callback_data=f"rejectreason_amount_{req_id}")],
+                [InlineKeyboardButton("Wrong Slip", callback_data=f"rejectreason_slip_{req_id}")]
             ])
             await query.message.reply_text(f"❌ Select rejection reason for request {req_id}:",
                                            reply_markup=reject_buttons)
-            await query.answer("Rejection reason requested.")
 
-    elif query.data.startswith(('reject_id_', 'reject_amount_', 'reject_slip_')):
-        parts = query.data.split("_")
-        reason = f"{parts[0]}_{parts[1]}"
-        req_id = '_'.join(parts[2:])  # support full UUID
-
+    elif query.data.startswith('rejectreason_'):
+        _, reason, req_id = query.data.split("_", 2)
         c.execute("SELECT user_id FROM requests WHERE request_id=?", (req_id,))
         row = c.fetchone()
         if not row:
@@ -112,41 +104,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         target_user = row[0]
 
-        if reason == 'reject_id':
+        if reason == "id":
             c.execute("UPDATE requests SET xbet_id=NULL WHERE request_id=?", (req_id,))
             conn.commit()
             await context.bot.send_message(target_user, "❌ Your ID was incorrect. Please re-enter your 1xBet ID:")
-
-        elif reason == 'reject_amount':
+        elif reason == "amount":
             c.execute("UPDATE requests SET amount=NULL WHERE request_id=?", (req_id,))
             conn.commit()
             await context.bot.send_message(target_user, "❌ Your amount was incorrect. Please re-enter your amount:")
-
-        elif reason == 'reject_slip':
+        elif reason == "slip":
             c.execute("UPDATE requests SET slip_file=NULL WHERE request_id=?", (req_id,))
             conn.commit()
             await context.bot.send_message(target_user, "❌ Your slip was incorrect. Please resend your slip:")
-
-        await query.answer("Rejection reason sent to user.")
     conn.close()
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
-
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("SELECT request_id, xbet_id, amount, bank FROM requests WHERE user_id=? AND status='pending'",
               (user_id,))
     row = c.fetchone()
-
     if not row:
         await update.message.reply_text("❌ Please start a new deposit with /start.")
         conn.close()
         return
 
     request_id, xbet_id, amount, bank = row
-
     if not xbet_id:
         if text.isdigit() and 9 <= len(text) <= 13:
             c.execute("UPDATE requests SET xbet_id=? WHERE request_id=?", (text, request_id))
@@ -154,7 +139,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Enter the amount you want to deposit:")
         else:
             await update.message.reply_text("❌ Invalid ID format. Please enter a 9–13 digit number.")
-
     elif not amount:
         if text.isdigit() and int(text) >= 1000:
             c.execute("UPDATE requests SET amount=? WHERE request_id=?", (int(text), request_id))
@@ -164,7 +148,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("🏦 Select a bank:", reply_markup=InlineKeyboardMarkup(bank_buttons))
         else:
             await update.message.reply_text("❌ Invalid amount. Please enter a number ≥ 1000.")
-
     conn.close()
 
 async def slip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
