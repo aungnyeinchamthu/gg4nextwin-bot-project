@@ -1,22 +1,24 @@
 import os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-RAILWAY_STATIC_URL = os.getenv("RAILWAY_STATIC_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Hello! I am your Railway bot, ready to serve!")
+async def start(update, context):
+    await update.message.reply_text("👋 Hello! I am your bot, ready on Railway!")
 
 def main():
+    if not BOT_TOKEN or not WEBHOOK_URL:
+        raise ValueError("❌ BOT_TOKEN and WEBHOOK_URL must be set in Railway environment variables.")
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
 
-    webhook_url = f"{RAILWAY_STATIC_URL}/webhook/{BOT_TOKEN}"
     app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
-        webhook_url=webhook_url
+        port=int(os.environ.get("PORT", 8000)),
+        webhook_url=WEBHOOK_URL
     )
 
 if __name__ == "__main__":
