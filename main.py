@@ -1,15 +1,17 @@
 import os
 import aiosqlite
-import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils import executor
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.filters import Command
+from aiogram import F
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 
 async def init_db():
     async with aiosqlite.connect("bot.db") as db:
@@ -28,64 +30,63 @@ async def init_db():
         """)
         await db.commit()
 
-@dp.message_handler(commands=['start'])
+@dp.message(Command("start"))
 async def start_handler(message: types.Message):
-    keyboard = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("💰 Deposit", callback_data='deposit')
-    )
-    await message.reply("👋 Welcome! Please choose an option:", reply_markup=keyboard)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Deposit", callback_data='deposit')]
+    ])
+    await message.answer("👋 Welcome! Please choose an option:", reply_markup=keyboard)
 
-@dp.callback_query_handler(lambda c: c.data == 'deposit')
-async def deposit_start(query: types.CallbackQuery):
-    await query.message.answer("Please enter your 1xBet ID (9–13 digits):")
-    await dp.current_state(user=query.from_user.id).set_state("awaiting_xbet_id")
+@dp.callback_query(F.data == 'deposit')
+async def deposit_start(callback: types.CallbackQuery, state):
+    await state.set_state("awaiting_xbet_id")
+    await callback.message.answer("Please enter your 1xBet ID (9–13 digits):")
+    await callback.answer()
 
-@dp.message_handler(state="awaiting_xbet_id")
+@dp.message(F.text, state="awaiting_xbet_id")
 async def handle_xbet_id(message: types.Message, state):
     xbet_id = message.text.strip()
     if not (xbet_id.isdigit() and 9 <= len(xbet_id) <= 13):
-        await message.reply("❌ Invalid ID format. Please enter a 9–13 digit number:")
+        await message.answer("❌ Invalid ID format. Please enter a 9–13 digit number:")
         return
     async with aiosqlite.connect("bot.db") as db:
         await db.execute("INSERT INTO requests (user_id, username, xbet_id) VALUES (?, ?, ?)",
                          (message.from_user.id, message.from_user.username or f"user_{message.from_user.id}", xbet_id))
         await db.commit()
-    await message.reply("✅ Please enter the amount you want to deposit (min 1000 MMK):")
-    await dp.current_state(user=message.from_user.id).set_state("awaiting_amount")
+    await state.set_state("awaiting_amount")
+    await message.answer("✅ Please enter the amount you want to deposit (min 1000 MMK):")
 
-@dp.message_handler(state="awaiting_amount")
+@dp.message(F.text, state="awaiting_amount")
 async def handle_amount(message: types.Message, state):
     amount = message.text.strip()
     if not (amount.isdigit() and int(amount) >= 1000):
-        await message.reply("❌ Invalid amount. Please enter a number ≥ 1000:")
+        await message.answer("❌ Invalid amount. Please enter a number ≥ 1000:")
         return
     async with aiosqlite.connect("bot.db") as db:
         await db.execute("UPDATE requests SET amount=? WHERE user_id=? AND status='pending'",
                          (int(amount), message.from_user.id))
         await db.commit()
-    keyboard = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("KBZ Bank", callback_data='bank_KBZ'),
-        InlineKeyboardButton("AYA Bank", callback_data='bank_AYA'),
-        InlineKeyboardButton("CB Bank", callback_data='bank_CB')
-    )
-    await message.reply("🏦 Please choose a bank:", reply_markup=keyboard)
-    await dp.current_state(user=message.from_user.id).set_state("awaiting_bank")
+    await state.set_state("awaiting_bank")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="KBZ Bank", callback_data='bank_KBZ')],
+        [InlineKeyboardButton(text="AYA Bank", callback_data='bank_AYA')],
+        [InlineKeyboardButton(text="CB Bank", callback_data='bank_CB')],
+    ])
+    await message.answer("🏦 Please choose a bank:", reply_markup=keyboard)
 
-@dp.callback_query_handler(lambda c: c.data.startswith('bank_'), state="awaiting_bank")
-async def handle_bank_selection(query: types.CallbackQuery, state):
-    bank_name = query.data.split("_")[1]
+@dp.callback_query(F.data.startswith('bank_'), state="awaiting_bank")
+async def handle_bank_selection(callback: types.CallbackQuery, state):
+    bank_name = callback.data.split("_")[1]
     async with aiosqlite.connect("bot.db") as db:
         await db.execute("UPDATE requests SET bank=? WHERE user_id=? AND status='pending'",
-                         (bank_name, query.from_user.id))
+                         (bank_name, callback.from_user.id))
         await db.commit()
-    await query.message.answer("📎 Please send your deposit slip (photo or document).")
-    await dp.current_state(user=query.from_user.id).set_state("awaiting_slip")
+    await state.set_state("awaiting_slip")
+    await callback.message.answer("📎 Please send your deposit slip (photo or document).")
+    await callback.answer()
 
-@dp.message_handler(content_types=types.ContentType.ANY, state="awaiting_slip")
+@dp.message(F.content_type.in_(['photo', 'document']), state="awaiting_slip")
 async def handle_slip(message: types.Message, state):
-    if not (message.photo or message.document):
-        await message.reply("❌ Please send a valid photo or document of your slip.")
-        return
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
     async with aiosqlite.connect("bot.db") as db:
         await db.execute("UPDATE requests SET slip_file=? WHERE user_id=? AND status='pending'",
@@ -96,19 +97,19 @@ async def handle_slip(message: types.Message, state):
         req = await cur.fetchone()
     caption = (f"🧾 Request #{req[0]}\n👤 User: @{message.from_user.username}\n🆔 1xBet ID: {req[1]}\n"
                f"💰 Amount: {req[2]}\n🏦 Bank: {req[3]}")
-    buttons = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("🔒 Take", callback_data=f"take_{req[0]}"),
-        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{req[0]}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{req[0]}")
-    )
+    buttons = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔒 Take", callback_data=f"take_{req[0]}")],
+        [InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{req[0]}")],
+        [InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{req[0]}")]
+    ])
     await bot.send_photo(ADMIN_GROUP_ID, file_id, caption=caption, reply_markup=buttons)
-    await message.reply("✅ Your slip has been sent for admin review.")
-    await dp.current_state(user=message.from_user.id).finish()
+    await message.answer("✅ Your slip has been sent for admin review.")
+    await state.clear()
 
-async def on_startup(dp):
+async def main():
     await init_db()
-    print("🤖 Bot started...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    from aiogram import executor
-    executor.start_polling(dp, on_startup=on_startup)
+    import asyncio
+    asyncio.run(main())
