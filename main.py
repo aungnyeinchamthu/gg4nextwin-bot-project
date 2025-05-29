@@ -7,8 +7,8 @@ from telegram.ext import (
     MessageHandler, ContextTypes, filters
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # set your token in environment
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))  # set admin group ID
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Set this as env var or hardcode
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))  # Set as env var or hardcode
 
 def init_db():
     conn = sqlite3.connect("bot.db")
@@ -48,13 +48,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c = conn.cursor()
 
     if query.data == 'deposit_start':
-        # create new request_id
         request_id = str(uuid.uuid4())
         c.execute("INSERT INTO requests (request_id, user_id, username) VALUES (?, ?, ?)",
                   (request_id, user_id, username))
         conn.commit()
-        await query.message.reply_text("Please enter your 1xBet ID (9–13 digits):")
         context.user_data['current_request'] = request_id
+        await query.message.reply_text("Please enter your 1xBet ID (9–13 digits):")
 
     elif query.data.startswith('bank_'):
         bank_index = int(query.data.split("_")[1])
@@ -97,10 +96,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             await query.message.reply_text(f"❌ Select rejection reason for request {req_id}:",
                                            reply_markup=reject_buttons)
-            await query.answer("Reject reason requested.")
+            await query.answer("Rejection reason requested.")
 
     elif query.data.startswith(('reject_id_', 'reject_amount_', 'reject_slip_')):
-        reason, req_id = '_'.join(query.data.split("_")[:-1]), query.data.split("_")[-1]
+        parts = query.data.split("_")
+        reason = f"{parts[0]}_{parts[1]}"
+        req_id = '_'.join(parts[2:])  # support full UUID
+
         c.execute("SELECT user_id FROM requests WHERE request_id=?", (req_id,))
         row = c.fetchone()
         if not row:
@@ -115,9 +117,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(target_user, "❌ Your amount was incorrect. Please re-enter your amount:")
         elif reason == 'reject_slip':
             await context.bot.send_message(target_user, "❌ Your slip was incorrect. Please resend your slip:")
-        conn.close()
-        await query.answer("Rejection reason sent to user.")
 
+        await query.answer("Rejection reason sent to user.")
     conn.close()
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
