@@ -1,13 +1,11 @@
 import os
 import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes, filters, MessageHandler
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID") or -1001234567890)
+# Load environment variables
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
 
 # Initialize database
 def init_db():
@@ -15,92 +13,84 @@ def init_db():
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            chat_id INTEGER PRIMARY KEY,
             username TEXT,
             first_name TEXT,
             last_name TEXT,
+            referral_code TEXT,
+            referred_by TEXT,
             total_deposit INTEGER DEFAULT 0,
             total_withdraw INTEGER DEFAULT 0,
             rank TEXT DEFAULT 'bronze',
-            referral_count INTEGER DEFAULT 0,
-            referred_by INTEGER,
             cashback_points INTEGER DEFAULT 0,
+            remark TEXT,
             phone_number TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-# /start handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    args = context.args
-    referred_by = None
+    chat_id = update.effective_user.id
+    username = update.effective_user.username or ""
+    first_name = update.effective_user.first_name or ""
+    last_name = update.effective_user.last_name or ""
 
-    if args and args[0].startswith("ref"):
-        referred_by = int(args[0][3:])
-        await context.bot.send_message(
-            ADMIN_GROUP_ID,
-            f"👥 User {user.id} joined via referral from {referred_by}"
-        )
+    # Check for referral deep link
+    referrer = None
+    if context.args:
+        referrer = context.args[0]
 
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE user_id=?", (user.id,))
-    existing = c.fetchone()
+    c.execute("SELECT * FROM users WHERE chat_id = ?", (chat_id,))
+    user = c.fetchone()
 
-    if not existing:
-        c.execute("""
-            INSERT INTO users (user_id, username, first_name, last_name, referred_by)
-            VALUES (?, ?, ?, ?, ?)
-        """, (user.id, user.username, user.first_name, user.last_name, referred_by))
+    if not user:
+        c.execute("INSERT INTO users (chat_id, username, first_name, last_name, referred_by) VALUES (?, ?, ?, ?, ?)",
+                  (chat_id, username, first_name, last_name, referrer))
         conn.commit()
-        await update.message.reply_text("✅ You have been registered!")
-    else:
-        await update.message.reply_text("👋 Welcome back!")
-
-    # Show main menu
-    keyboard = [
-        [InlineKeyboardButton("💰 Deposit", callback_data="deposit")],
-        [InlineKeyboardButton("📢 Referral", callback_data="referral")],
-        [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
-    ]
-    await update.message.reply_text("Here’s the main menu:",
-                                    reply_markup=InlineKeyboardMarkup(keyboard))
+        await context.bot.send_message(ADMIN_GROUP_ID, f"👤 New user registered: @{username} (ref: {referrer})")
     conn.close()
 
-# Referral button handler
-async def referral_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    referral_link = f"https://t.me/{context.bot.username}?start=ref{user_id}"
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(
-        f"✅ Here’s your referral link:\n{referral_link}\nShare it to earn rewards!"
-    )
+    keyboard = [
+        [InlineKeyboardButton("💰 Deposit", callback_data='deposit')],
+        [InlineKeyboardButton("🎁 My Referral", callback_data='my_referral')],
+        [InlineKeyboardButton("📊 My Stats", callback_data='my_stats')]
+    ]
+    await update.message.reply_text("👋 Welcome! Choose an option:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Deposit button handler (placeholder)
-async def deposit_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text("💰 Deposit process coming soon!")
+async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.from_user.id
+    referral_link = f"https://t.me/{context.bot.username}?start={chat_id}"
+    await query.message.reply_text(f"🔗 Your referral link:\n{referral_link}")
 
-# Help button handler (placeholder)
-async def help_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text("ℹ️ Help section coming soon!")
+async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.from_user.id
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT total_deposit, total_withdraw, rank, cashback_points FROM users WHERE chat_id = ?", (chat_id,))
+    row = c.fetchone()
+    conn.close()
 
-# Handle unknown messages
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Unknown command. Use /start to see the menu.")
+    if row:
+        deposit, withdraw, rank, cashback = row
+        await query.message.reply_text(
+            f"💼 Your Stats:\nDeposit: {deposit}\nWithdraw: {withdraw}\nRank: {rank}\nCashback Points: {cashback}")
+    else:
+        await query.message.reply_text("❌ You are not registered.")
 
 def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
+    
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(deposit_button, pattern="^deposit$"))
-    app.add_handler(CallbackQueryHandler(referral_button, pattern="^referral$"))
-    app.add_handler(CallbackQueryHandler(help_button, pattern="^help$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(my_referral, pattern='^my_referral$'))
+    app.add_handler(CallbackQueryHandler(my_stats, pattern='^my_stats$'))
 
     app.run_polling()
 
