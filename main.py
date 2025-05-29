@@ -36,8 +36,7 @@ banks = [
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("💰 Deposit", callback_data='deposit_start')]]
-    await update.message.reply_text("👋 Welcome! Please choose an option:",
-                                    reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("👋 Welcome! Please choose an option:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -65,8 +64,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("UPDATE requests SET bank=? WHERE request_id=?", (selected_bank['name'], request_id))
         conn.commit()
         await query.message.reply_text(
-            f"✅ You selected {selected_bank['name']} (Account: {selected_bank['account']}).\n"
-            f"Please send your deposit slip as an image or document.")
+            f"✅ You selected {selected_bank['name']} (Account: {selected_bank['account']}).\nPlease send your deposit slip as an image or document.")
 
     elif query.data.startswith(('take_', 'approve_', 'reject_')):
         action, req_id = query.data.split("_", 1)
