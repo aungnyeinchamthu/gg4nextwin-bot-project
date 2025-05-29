@@ -8,8 +8,6 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
-CASHBACK_PERCENT = 0.05
-REFERRAL_PERCENT = 0.0025
 
 banks = [
     {"name": "KBZ Bank", "account_name": "GG4NextWin Co.", "account_number": "123-456-789"},
@@ -19,7 +17,6 @@ banks = [
 
 taken_requests = {}
 admin_active = {}
-pending_replies = {}
 
 def init_db():
     conn = sqlite3.connect("bot.db")
@@ -144,7 +141,13 @@ async def slip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    action, target_id = query.data.split("_")
+    parts = query.data.split("_")
+
+    if len(parts) != 2:
+        await query.answer("❌ Invalid admin action format.", show_alert=True)
+        return
+
+    action, target_id = parts
     target_id = int(target_id)
     admin_id = query.from_user.id
     admin_username = query.from_user.username or f"admin_{admin_id}"
@@ -197,7 +200,11 @@ async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rejection_reason_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    reason, target_id = query.data.split("_")[1:]
+    parts = query.data.split("_")
+    if len(parts) != 3:
+        await query.answer("❌ Invalid rejection format.", show_alert=True)
+        return
+    _, reason, target_id = parts
     target_id = int(target_id)
 
     conn = sqlite3.connect("bot.db")
@@ -222,7 +229,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler, pattern="^(deposit)$"))
     app.add_handler(CallbackQueryHandler(bank_selection, pattern="^bank_"))
-    app.add_handler(CallbackQueryHandler(admin_handler, pattern="^(take|approve|reject)_"))
+    app.add_handler(CallbackQueryHandler(admin_handler, pattern="^(take|approve|reject)_\\d+$"))
     app.add_handler(CallbackQueryHandler(rejection_reason_handler, pattern=r"^reject_(id|amount|slip)_\d+$"))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, slip_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
