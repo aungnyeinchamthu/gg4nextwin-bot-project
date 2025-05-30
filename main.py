@@ -1,10 +1,16 @@
 import os
 from telegram.ext import Application, CommandHandler
-from handlers import start, help_command
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SECRET_TOKEN = os.getenv("SECRET_TOKEN")
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+
+async def start(update, context):
+    await update.message.reply_text("Hello! Welcome to the bot.")
+
+async def help_command(update, context):
+    await update.message.reply_text("This is the help message.")
 
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
