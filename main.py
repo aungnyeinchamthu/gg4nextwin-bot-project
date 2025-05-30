@@ -13,7 +13,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
 RAILWAY_STATIC_URL = os.getenv("RAILWAY_STATIC_URL")
 PORT = int(os.getenv("PORT", 8000))
-WEBHOOK_URL = f"https://{RAILWAY_STATIC_URL}/webhook"
+WEBHOOK_URL = f"https://{RAILWAY_STATIC_URL}/"
 
 # Initialize database
 conn = sqlite3.connect("bot.db")
@@ -38,14 +38,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     referral_by = None
 
-    # Check if coming from referral link
     if context.args:
         try:
             referral_by = int(context.args[0])
         except ValueError:
             await update.message.reply_text("Invalid referral link, continuing without referral.")
 
-    # Insert or update user in DB
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
@@ -63,7 +61,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     conn.close()
 
-    # Show main menu
     keyboard = [
         [InlineKeyboardButton("Deposit", callback_data="deposit")],
         [InlineKeyboardButton("Withdraw", callback_data="withdraw")],
@@ -94,11 +91,13 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    await app.run_webhook(
+    await app.bot.set_webhook(url=WEBHOOK_URL)
+    await app.start()
+    await app.updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
-        webhook_url=WEBHOOK_URL,
     )
+    await app.updater.idle()
 
 if __name__ == "__main__":
     asyncio.run(main())
