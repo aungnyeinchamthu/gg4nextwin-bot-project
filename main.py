@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_GROUP_ID"))
 RAILWAY_STATIC_URL = os.getenv("RAILWAY_STATIC_URL")
 PORT = int(os.getenv("PORT", 8000))
 WEBHOOK_URL = f"https://{RAILWAY_STATIC_URL}/"
