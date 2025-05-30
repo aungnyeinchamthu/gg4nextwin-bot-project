@@ -102,7 +102,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Please use the menu buttons.")
 
 # Main function
-async def main():
+def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -111,12 +111,12 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     # Run with webhook
-    await app.run_webhook(
+    app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8000)),
         webhook_url=WEBHOOK_URL
     )
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
+
